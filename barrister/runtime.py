@@ -462,6 +462,179 @@ class HttpTransport(object):
         f.close()
         return json.loads(resp)
 
+class WebsocketTransport(object):
+    """
+    A client transport that uses Twisted to make requests against a
+    Websocket server.
+    """
+
+    def __init__(self, protocol):
+        """
+        Creates a new Websocket transport
+
+        :Parameters:
+          protocol
+            The Twisted protocol instance to use for communication
+        """
+        self.protocol = protocol
+
+    def request(self, req):
+        """
+        Makes a request against the server and returns a deferred for
+        the deserialized result.
+
+        :Parameters:
+          req
+            List or dict representing a JSON-RPC formatted request
+        """
+        return self.protocol.sendRPC(req)
+
+class TwistedClient(object):
+    """
+    Main class for consuming a server implementation using Twisted asynchronous
+    framework.  Given a transport it loads the IDL from the server and creates
+    proxy objects that can be called like local classes from your
+    application code.
+
+    With the exception of start_batch, you generally never need to use the methods provided by this
+    class directly.
+
+    This class is adapted from the Client class to use asynchronous calls.
+    NOTE: start_batch() is not yet implemented.
+    """
+
+    def __init__(self, transport, validate_request=True, validate_response=True,
+                 id_gen=idgen_uuid):
+        """
+        Creates a new Client for the given transport.
+
+        :Parameters:
+          transport
+            Transport object to use to make requests
+          validate_request
+            If True, the request will be validated against the Contract and a RpcException raised if
+            it does not match the IDL
+          validate_response
+            If True, the response will be validated against the Contract and a RpcException raised if
+            it does not match the IDL
+          id_gen
+            A callable to use to create request IDs.  JSON-RPC request IDs are only used by Barrister
+            to correlate requests with responses when using a batch, but your application may use them
+            for logging or other purposes.  UUIDs are used by default, but you can substitute another
+            function if you prefer something shorter.
+        """
+        logging.basicConfig()
+        self.log = logging.getLogger("barrister")
+        self.transport = transport
+        self.validate_req = validate_request
+        self.validate_resp = validate_response
+        self.id_gen = id_gen
+
+    def start(self):
+        """
+        Starts the client by making a request to the server to load the IDL,
+        returning a deferred for the answer.
+        When the answer is received, the first callback creates proxies for
+        each interface in the IDL.
+        When the user callback is fired, you can immediately begin making
+        requests against the proxies.
+        """
+        def iface_received(resp):
+            self.contract = Contract(resp["result"])
+            for k, v in list(self.contract.interfaces.items()):
+                setattr(self, k, InterfaceClientProxy(self, v))
+            return resp
+
+        req = {"jsonrpc": "2.0", "method": "barrister-idl", "id": "1"}
+        d = self.transport.request(req)
+        d.addCallback(iface_received)
+        return d
+
+    def get_meta(self):
+        """
+        Returns the dict of metadata from the Contract
+        """
+        return self.contract.meta
+
+    def call(self, iface_name, func_name, params):
+        """
+        Makes a single RPC request and returns a deferred for the result.
+
+        :Parameters:
+          iface_name
+            Interface name to call
+          func_name
+            Function to call on the interface
+          params
+            List of parameters to pass to the function
+        """
+        def resp_received(resp):
+            if self.log.isEnabledFor(logging.DEBUG):
+                self.log.debug("Response: %s" % str(resp))
+            return self.to_result(iface_name, func_name, resp)
+
+        req  = self.to_request(iface_name, func_name, params)
+        if self.log.isEnabledFor(logging.DEBUG):
+            self.log.debug("Request: %s" % str(req))
+        d = self.transport.request(req)
+        d.addCallback(resp_received)
+        return d
+
+    def to_request(self, iface_name, func_name, params):
+        """
+        Converts the arguments to a JSON-RPC request dict.  The 'id' field is populated
+        using the id_gen function passed to the Client constructor.
+
+        If validate_request==True on the Client constructor, the params are validated
+        against the expected types for the function and a RpcException raised if they are
+        invalid.
+
+        :Parameters:
+          iface_name
+            Interface name to call
+          func_name
+            Function to call on the interface
+          params
+            List of parameters to pass to the function
+        """
+        if self.validate_req:
+            self.contract.validate_request(iface_name, func_name, params)
+
+        method = "%s.%s" % (iface_name, func_name)
+        reqid = self.id_gen()
+        return { "jsonrpc": "2.0", "id": reqid, "method": method, "params": params }
+
+    def to_result(self, iface_name, func_name, resp):
+        """
+        Takes a JSON-RPC response and checks for an "error" slot. If it exists,
+        a RpcException is raised.  If no "error" slot exists, the "result" slot is
+        returned.
+
+        If validate_response==True on the Client constructor, the result is validated
+        against the expected return type for the function and a RpcException raised if it is
+        invalid.
+
+        :Parameters:
+          iface_name
+            Interface name that was called
+          func_name
+            Function that was called on the interface
+          resp
+            Dict formatted as a JSON-RPC response
+        """
+        if "error" in resp:
+            e = resp["error"]
+            data = None
+            if "data" in e:
+                data = e["data"]
+            raise RpcException(e["code"], e["message"], data)
+
+        result = resp["result"]
+
+        if self.validate_resp:
+            self.contract.validate_response(iface_name, func_name, result)
+        return result
+
 class InProcTransport(object):
     """
     A client transport that invokes calls directly against a Server instance in process.
