@@ -5,6 +5,8 @@
     :license: MIT, see LICENSE for more details.
 """
 
+from twisted.internet import defer
+
 import uuid
 import itertools
 import logging
@@ -487,7 +489,28 @@ class WebsocketTransport(object):
           req
             List or dict representing a JSON-RPC formatted request
         """
-        return self.protocol.sendRPC(req)
+        self.deferred = defer.Deferred()
+
+        print("RPC --> {!r}".format(req))
+        payload = json.dumps(req, ensure_ascii=False).encode('utf8')
+        self.protocol.sendMessage(payload, isBinary=False)
+
+        return self.deferred
+
+    def response_received(self, payload):
+        """
+        Callback invoked when a response is received from the server.
+
+        :Parameters:
+          payload
+            The raw bytes received
+        """
+        message = json.loads(payload.decode('utf8'))
+        print("<-- RPC {!r}".format(message))
+
+        # FIXME: Match message ID against appropriate request
+        self.deferred.callback(message)
+
 
 class TwistedClient(object):
     """
@@ -530,9 +553,9 @@ class TwistedClient(object):
         self.validate_resp = validate_response
         self.id_gen = id_gen
 
-    def start(self):
+    def get_iface(self):
         """
-        Starts the client by making a request to the server to load the IDL,
+        Initialize the client by making a request to the server to load the IDL,
         returning a deferred for the answer.
         When the answer is received, the first callback creates proxies for
         each interface in the IDL.
