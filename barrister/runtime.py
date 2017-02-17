@@ -568,10 +568,14 @@ class TwistedClient(object):
                 setattr(self, k, InterfaceClientProxy(self, v))
             return resp
 
-        req = {"jsonrpc": "2.0", "method": "barrister-idl", "id": "1"}
-        d = self.transport.request(req)
-        d.addCallback(iface_received)
-        return d
+        try:
+            req = {"jsonrpc": "2.0", "method": "barrister-idl", "id": "1"}
+            d = self.transport.request(req)
+        except Exception as e:
+            return defer.fail(e)
+        else:
+            d.addCallback(iface_received)
+            return d
 
     def get_meta(self):
         """
@@ -596,12 +600,16 @@ class TwistedClient(object):
                 self.log.debug("Response: %s" % str(resp))
             return self.to_result(iface_name, func_name, resp)
 
-        req  = self.to_request(iface_name, func_name, params)
-        if self.log.isEnabledFor(logging.DEBUG):
-            self.log.debug("Request: %s" % str(req))
-        d = self.transport.request(req)
-        d.addCallback(resp_received)
-        return d
+        try:
+            req  = self.to_request(iface_name, func_name, params)
+            if self.log.isEnabledFor(logging.DEBUG):
+                self.log.debug("Request: %s" % str(req))
+            d = self.transport.request(req)
+        except Exception as e:
+            return defer.fail(e)
+        else:
+            d.addCallback(resp_received)
+            return d
 
     def to_request(self, iface_name, func_name, params):
         """
