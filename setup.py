@@ -12,7 +12,18 @@ Links
 * `GitHub repo <https://github.com/coopernurse/barrister>`_
 
 """
+import sys
 from distutils.core import setup
+
+dependencies = [
+        'Markdown',
+        'Twisted',
+    ]
+# Plex is only available with Python 2
+if sys.version_info < (3, 0):
+    dependencies += [
+        'plex',
+    ]
 
 setup(
     name='barrister',
@@ -25,10 +36,7 @@ setup(
     author_email='james@bitmechanic.com',
     description='Polyglot RPC',
     long_description=__doc__,
-    install_requires=[
-        'Markdown',
-        'plex'
-    ],
+    install_requires=dependencies,
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Operating System :: OS Independent',

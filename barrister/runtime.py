@@ -478,6 +478,8 @@ class WebsocketTransport(object):
           protocol
             The Twisted protocol instance to use for communication
         """
+        logging.basicConfig()
+        self.log = logging.getLogger("barrister")
         self.protocol = protocol
 
     def request(self, req):
@@ -491,7 +493,8 @@ class WebsocketTransport(object):
         """
         self.deferred = defer.Deferred()
 
-        print("RPC --> {!r}".format(req))
+        if self.log.isEnabledFor(logging.DEBUG):
+            self.log.debug("RPC --> {!r}".format(req))
         payload = json.dumps(req, ensure_ascii=False).encode('utf8')
         self.protocol.sendMessage(payload, isBinary=False)
 
@@ -506,7 +509,8 @@ class WebsocketTransport(object):
             The raw bytes received
         """
         message = json.loads(payload.decode('utf8'))
-        print("<-- RPC {!r}".format(message))
+        if self.log.isEnabledFor(logging.DEBUG):
+            self.log.debug("<-- RPC {!r}".format(message))
 
         # FIXME: Match message ID against appropriate request
         self.deferred.callback(message)
@@ -553,7 +557,7 @@ class TwistedClient(object):
         self.validate_resp = validate_response
         self.id_gen = id_gen
 
-    def get_iface(self):
+    def get_api(self):
         """
         Initialize the client by making a request to the server to load the IDL,
         returning a deferred for the answer.

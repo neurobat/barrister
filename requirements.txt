@@ -2,3 +2,4 @@ Flask==0.8
 Markdown==2.1.1
 six==1.10.0
 plex==2.0.0dev
+Twisted==17.1.0
