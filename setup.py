@@ -18,6 +18,7 @@ from distutils.core import setup
 dependencies = [
         'Markdown',
         'Twisted',
+        'cachetools',
     ]
 # Plex is only available with Python 2
 if sys.version_info < (3, 0):

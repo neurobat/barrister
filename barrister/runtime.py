@@ -19,6 +19,8 @@ else:
     import urllib.request as urllib
     import urllib.error, urllib.parse
 
+from cachetools import TTLCache
+
 # JSON-RPC standard error codes
 ERR_PARSE = -32700
 ERR_INVALID_REQ = -32600
@@ -481,6 +483,7 @@ class WebsocketTransport(object):
         logging.basicConfig()
         self.log = logging.getLogger("barrister")
         self.protocol = protocol
+        self.reqs = TTLCache(maxsize=100, ttl=60)  # TTL in seconds
 
     def request(self, req):
         """
@@ -491,14 +494,15 @@ class WebsocketTransport(object):
           req
             List or dict representing a JSON-RPC formatted request
         """
-        self.deferred = defer.Deferred()
+        d = defer.Deferred()
+        self.reqs[req['id']] = d
 
         if self.log.isEnabledFor(logging.DEBUG):
             self.log.debug("RPC --> {!r}".format(req))
         payload = json.dumps(req, ensure_ascii=False).encode('utf8')
         self.protocol.sendMessage(payload, isBinary=False)
 
-        return self.deferred
+        return d
 
     def response_received(self, payload):
         """
@@ -512,8 +516,13 @@ class WebsocketTransport(object):
         if self.log.isEnabledFor(logging.DEBUG):
             self.log.debug("<-- RPC {!r}".format(message))
 
-        # FIXME: Match message ID against appropriate request
-        self.deferred.callback(message)
+        try:
+            d = self.reqs.pop(message['id'])
+        except KeyError as e:
+            raise RpcException(
+                ERR_INVALID_RESP, "Received response without request")
+
+        d.callback(message)
 
 
 class TwistedClient(object):
