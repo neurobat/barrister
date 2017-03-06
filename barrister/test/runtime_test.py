@@ -15,9 +15,10 @@ import uuid
 import time
 import unittest
 import barrister
+import six
 
-def newUser(userId="abc123", email=None):
-    return { "userId" : userId, "password" : "pw", "email" : email,
+def newUser(userId=u"abc123", email=None):
+    return { "userId" : userId, "password" : u"pw", "email" : email,
       "emailVerified" : False, "dateCreated" : 1, "age" : 3.3 }
 
 def now_millis():
@@ -29,13 +30,13 @@ class UserServiceImpl(object):
         self.users = { }
 
     def get(self, userId):
-        resp = self._resp("ok", "user created")
+        resp = self._resp(u"ok", u"user created")
         resp["user"] = self.users[userId]
         return resp
 
     def create(self, user):
-        resp = self._resp("ok", "user created")
-        userId = uuid.uuid4().hex
+        resp = self._resp(u"ok", u"user created")
+        userId = six.text_type(uuid.uuid4().hex)
         user["dateCreated"] = now_millis()
         resp["userId"] = userId
         self.users[userId] = user
@@ -44,21 +45,21 @@ class UserServiceImpl(object):
     def update(self, user):
         userId = user["userId"]
         self.users[userId] = user
-        return self._resp("ok", "user updated")
+        return self._resp(u"ok", u"user updated")
 
     def validateEmail(self, userId):
-        return self._resp("ok", "user updated")
+        return self._resp(u"ok", u"user updated")
 
     def changePassword(self, userId, oldPass, newPass):
-        return self._resp("ok", "password updated")
+        return self._resp(u"ok", u"password updated")
 
     def countUsers(self):
-        resp = self._resp("ok", "ok")
+        resp = self._resp(u"ok", u"ok")
         resp["count"] = len(self.users)
         return resp
 
     def getAll(self, userIds):
-        return { "status": "ok", "message" : "users here", "users": [] }
+        return { "status": u"ok", "message" : u"users here", "users": [] }
 
     def _resp(self, status, message):
         return { "status" : status, "message" : message }
@@ -79,14 +80,14 @@ class RuntimeTest(unittest.TestCase):
 
     def test_user_crud(self):
         svc = self.client.UserService
-        user = newUser(email="foo@example.com")
+        user = newUser(email=u"foo@example.com")
         del user["age"]  # field is optional
         resp = svc.create(user)
         self.assertTrue(resp["userId"])
         user2 = svc.get(resp["userId"])["user"]
         self.assertEqual(user["email"], user2["email"])
         self.assertTrue(user["dateCreated"] > 0)
-        self.assertEqual("ok", svc.changePassword("123", "oldpw", "newpw")["status"])
+        self.assertEqual(u"ok", svc.changePassword(u"123", u"oldpw", u"newpw")["status"])
         self.assertEqual(1, svc.countUsers()["count"])
         svc.getAll([])
 
@@ -98,7 +99,7 @@ class RuntimeTest(unittest.TestCase):
             [ svc.get, 1 ], # wrong type
             [ svc.create, None ], # wrong type
             [ svc.create, 1 ], # wrong type
-            [ svc.create, { "UserId" : "1" } ], # unknown param
+            [ svc.create, { "UserId" : u"1" } ], # unknown param
             [ svc.create, { "userId" : 1 } ], # wrong type
             [ svc.getAll, { } ], # wrong type
             [ svc.getAll, [ 1 ] ] # wrong type
@@ -117,36 +118,36 @@ class RuntimeTest(unittest.TestCase):
         svc = self.client.UserService
         responses = [
             { }, # missing fields
-            { "status" : "blah" }, # invalid enum
-            { "status" : "ok", "message" : 1 }, # invalid type
-            { "status" : "ok", "message" : "good", "blarg" : True }, # invalid field
-            { "status" : "ok", "message" : "good", "user" : { # missing password field
-                    "userId" : "123", "email" : "foo@bar.com",
+            { "status" : u"blah" }, # invalid enum
+            { "status" : u"ok", "message" : 1 }, # invalid type
+            { "status" : u"ok", "message" : u"good", "blarg" : True }, # invalid field
+            { "status" : u"ok", "message" : u"good", "user" : { # missing password field
+                    "userId" : u"123", "email" : u"foo@bar.com",
                     "emailVerified" : False, "dateCreated" : 1, "age" : 3.3 } },
-            { "status" : "ok", "message" : "good", "user" : { # missing password field
-                    "userId" : "123", "email" : "foo@bar.com",
+            { "status" : u"ok", "message" : u"good", "user" : { # missing password field
+                    "userId" : u"123", "email" : u"foo@bar.com",
                     "emailVerified" : False, "dateCreated" : 1, "age" : 3.3 } },
-            { "status" : "ok", "user" : { # missing message field
-                    "userId" : "123", "email" : "foo@bar.com",
+            { "status" : u"ok", "user" : { # missing message field
+                    "userId" : u"123", "email" : u"foo@bar.com",
                     "emailVerified" : False, "dateCreated" : 1, "age" : 3.3 } }
             ]
         for resp in responses:
             self.user_svc.get = lambda id: resp
             try:
-                svc.get("123")
+                svc.get(u"123")
                 self.fail("Expected RpcException for response: %s" % str(resp))
             except barrister.RpcException:
                 pass
 
     def test_batch(self):
         batch = self.client.start_batch()
-        batch.UserService.create(newUser(userId="1", email="foo@bar.com"))
-        batch.UserService.create(newUser(userId="2", email="foo@bar.com"))
+        batch.UserService.create(newUser(userId=u"1", email=u"foo@bar.com"))
+        batch.UserService.create(newUser(userId=u"2", email=u"foo@bar.com"))
         batch.UserService.countUsers()
         results = batch.send()
         self.assertEqual(3, len(results))
-        self.assertEqual(results[0].result["message"], "user created")
-        self.assertEqual(results[1].result["message"], "user created")
+        self.assertEqual(results[0].result["message"], u"user created")
+        self.assertEqual(results[1].result["message"], u"user created")
         self.assertEqual(2, results[2].result["count"])
 
     def _test_bench(self):
