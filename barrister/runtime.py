@@ -423,6 +423,243 @@ class Server(object):
             msg = "No implementation of '%s' found" % (iface_name)
             raise RpcException(ERR_METHOD_NOT_FOUND, msg)
 
+
+class TwistedServer(object):
+    """
+    Dispatches requests to user created handler classes based on method name.
+    Also responsible for validating requests and responses to ensure they conform to the
+    IDL Contract.
+    """
+
+    def __init__(self, contract, validate_request=True, validate_response=True):
+        """
+        Creates a new Server
+
+        :Parameters:
+          contract
+            Contract instance that this server should use
+          validate_request
+            If True, requests will be validated against the Contract and rejected if they are malformed
+          validate_response
+            If True, responses from handler methods will be validated against the Contract and rejected
+            if they are malformed
+        """
+        logging.basicConfig()
+        self.log = logging.getLogger("barrister")
+        self.validate_req = validate_request
+        self.validate_resp = validate_response
+        self.contract = contract
+        self.handlers = {}
+        self.filters = None
+
+    def add_handler(self, iface_name, handler):
+        """
+        Associates the given handler with the interface name.  If the interface does not exist in
+        the Contract, an RpcException is raised.
+
+        :Parameters:
+          iface_name
+            Name of interface that this handler implements
+          handler
+            Instance of a class that implements all functions defined on the interface
+        """
+        if self.contract.has_interface(iface_name):
+            self.handlers[iface_name] = handler
+        else:
+            raise RpcException(ERR_INVALID_REQ, "Unknown interface: '%s'", iface_name)
+
+    def set_filters(self, filters):
+        """
+        Sets the filters for the server.
+
+        :Parameters:
+          filters
+            List of filters to set on this server, or None to remove all filters.
+            Elements in list should subclass Filter
+        """
+        if filters == None or isinstance(filters, (tuple, list)):
+            self.filters = filters
+        else:
+            self.filters = [ filters ]
+
+    def call_json(self, req_json, props=None):
+        """
+        Deserializes req_json as JSON, invokes self.call(), and serializes result to JSON.
+        Returns JSON encoded string.
+
+        :Parameters:
+          req_json
+            JSON-RPC request serialized as JSON string
+          props
+            Application defined properties to set on RequestContext for use with filters.
+            For example: authentication headers.  Must be a dict.
+        """
+        try:
+            req = json.loads(req_json)
+        except:
+            msg = "Unable to parse JSON: %s" % req_json
+            return defer.fail(json.dumps(err_response(None, -32700, msg)))
+
+        d = self.call(req, props)
+        d.addBoth(json.dumps)
+        return d
+
+    def call(self, req, props=None):
+        """
+        Executes a Barrister request and returns a response.  If the request is a list, then the
+        response will also be a list.  If the request is an empty list, a RpcException is raised.
+
+        :Parameters:
+          req
+            The request. Either a list of dicts, or a single dict.
+          props
+            Application defined properties to set on RequestContext for use with filters.
+            For example: authentication headers.  Must be a dict.
+        """
+
+        if self.log.isEnabledFor(logging.DEBUG):
+            self.log.debug("Request: %s" % str(req))
+
+        if isinstance(req, list):
+            if len(req) < 1:
+                d = defer.fail(err_response(None, ERR_INVALID_REQ, "Invalid Request. Empty batch."))
+            else:
+                # run the batch call collecting the responses
+                d = defer.DeferredList([self._call_and_format(r, props) for r in req])
+        else:
+            d = self._call_and_format(req, props)
+
+        def log_response(response):
+            if self.log.isEnabledFor(logging.DEBUG):
+                self.log.debug("Response: %s" % str(response))
+            return response
+
+        d.addBoth(log_response)
+        return d
+
+    def _call_and_format(self, req, props=None):
+        """
+        Invokes a single request against a handler using _call() and traps any errors,
+        formatting them using _err().  If the request is successful it is wrapped in a
+        JSON-RPC 2.0 compliant dict with keys: 'jsonrpc', 'id', 'result'.
+
+        :Parameters:
+          req
+            A single dict representing a single JSON-RPC request
+          props
+            Application defined properties to set on RequestContext for use with filters.
+            For example: authentication headers.  Must be a dict.
+        """
+        if not isinstance(req, dict):
+            return err_response(None, ERR_INVALID_REQ,
+                                "Invalid Request. %s is not an object." % str(req))
+
+        reqid = None
+        if "id" in req:
+            reqid = req["id"]
+
+        if props is None:
+            props = {}
+        context = RequestContext(props, req)
+
+        if self.filters:
+            for f in self.filters:
+                f.pre(context)
+
+        if context.error:
+            return context.error
+
+        d = self._call(context)
+
+        def makeResponse(result):
+            return { "jsonrpc": "2.0", "id": reqid, "result": result }
+
+        def handleRpcException(failure):
+            failure.trap(RpcException)
+            e = failure.value
+            return err_response(reqid, e.code, e.msg, e.data)
+
+        d.addCallbacks(makeResponse, handleRpcException)
+
+        def handleUnexpectedExceptions(failure):
+            failure.trap(Exception)
+            self.log.exception("Error processing request: %s" % str(req))
+            return err_response(reqid, ERR_UNKNOWN,
+                                "Server error. Check logs for details.",
+                                data={'exception': str(failure.value)})
+
+        d.addErrback(handleUnexpectedExceptions)
+
+        if self.filters:
+            def postHook(hook, result):
+                context.response = result
+                hook(context)
+                return result
+
+            for f in self.filters:
+                d.addBoth(lambda r: postHook(f.post, r))
+
+        return d
+
+    def _call(self, context):
+        """
+        Executes a single request against a handler.  If the req.method == 'barrister-idl', the
+        Contract IDL JSON structure is returned.  Otherwise the method is resolved to a handler
+        based on the interface name, and the appropriate function is called on the handler.
+
+        :Parameter:
+          req
+            A dict representing a valid JSON-RPC 2.0 request.  'method' must be provided.
+        """
+        req = context.request
+        if "method" not in req:
+            return defer.fail(RpcException(ERR_INVALID_REQ, "Invalid Request. No 'method'."))
+
+        method = req["method"]
+
+        if method == "barrister-idl":
+            return defer.succeed(self.contract.idl_parsed)
+
+        iface_name, func_name = unpack_method(method)
+
+        if iface_name in self.handlers:
+            iface_impl = self.handlers[iface_name]
+            func = getattr(iface_impl, func_name)
+            if func:
+                if "params" in req:
+                    params = req["params"]
+                else:
+                    params = []
+
+                if self.validate_req:
+                    try:
+                        self.contract.validate_request(iface_name, func_name, params)
+                    except Exception as e:
+                        return defer.fail(e)
+
+                if hasattr(iface_impl, "barrister_pre"):
+                    pre_hook = getattr(iface_impl, "barrister_pre")
+                    pre_hook(context, params)
+
+                if params:
+                    d = func(*params)
+                else:
+                    d = func()
+
+                if self.validate_resp:
+                    def validate_response(result):
+                        self.contract.validate_response(iface_name, func_name, result)
+                        return result
+                    d.addCallback(validate_response)
+                return d
+            else:
+                msg = "Method '%s' not found" % (method)
+                return defer.fail(RpcException(ERR_METHOD_NOT_FOUND, msg))
+        else:
+            msg = "No implementation of '%s' found" % (iface_name)
+            return defer.fail(RpcException(ERR_METHOD_NOT_FOUND, msg))
+
+
 class HttpTransport(object):
     """
     A client transport that uses urllib2 to make requests against a HTTP server.
